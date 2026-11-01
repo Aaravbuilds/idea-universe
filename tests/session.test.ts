@@ -1,0 +1,11 @@
+import {describe,it,expect,vi,afterEach} from 'vitest';
+import {sessionHeaders,refreshSession} from '../lib/session';
+import {response} from '../lib/server';
+afterEach(()=>{vi.unstubAllGlobals();vi.unstubAllEnvs()});
+describe('production session lifecycle',()=>{
+ it('stores both tokens in secure HttpOnly cookies and caps access lifetime',()=>{const h=sessionHeaders({access_token:'access',refresh_token:'refresh',expires_in:7200});const cookies=h.getSetCookie();expect(cookies).toHaveLength(2);expect(cookies[0]).toContain('Max-Age=3600');for(const c of cookies){expect(c).toContain('HttpOnly');expect(c).toContain('Secure');expect(c).toContain('SameSite=Lax')}expect(response({ok:true},200,h).headers.getSetCookie()).toHaveLength(2)});
+ it('clears both cookies on sign-out',()=>{const cookies=sessionHeaders(null).getSetCookie();expect(cookies).toHaveLength(2);for(const c of cookies)expect(c).toContain('Max-Age=0')});
+ it('never renews a session without a refresh cookie',async()=>{await expect(refreshSession(new Request('https://example.com'))).rejects.toMatchObject({status:401})});
+ it('rejects disabled users even after successful token rotation',async()=>{vi.stubEnv('SUPABASE_URL','https://example.supabase.co');const fetchMock=vi.fn().mockResolvedValueOnce(Response.json({access_token:'new',refresh_token:'rotated',expires_in:3600})).mockResolvedValueOnce(Response.json({id:'user'})).mockResolvedValueOnce(Response.json([{id:'user',disabled:true}]));vi.stubGlobal('fetch',fetchMock);await expect(refreshSession(new Request('https://example.com',{headers:{cookie:'iu_refresh=old'}}))).rejects.toMatchObject({status:403})});
+ it('accepts rotated credentials only after checking active membership',async()=>{vi.stubEnv('SUPABASE_URL','https://example.supabase.co');const fetchMock=vi.fn().mockResolvedValueOnce(Response.json({access_token:'new',refresh_token:'rotated',expires_in:3600})).mockResolvedValueOnce(Response.json({id:'user'})).mockResolvedValueOnce(Response.json([{id:'user',disabled:false}]));vi.stubGlobal('fetch',fetchMock);expect((await refreshSession(new Request('https://example.com',{headers:{cookie:'iu_refresh=old'}}))).refresh_token).toBe('rotated');expect(fetchMock).toHaveBeenCalledTimes(3)});
+});
